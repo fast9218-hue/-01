@@ -1,0 +1,4 @@
+-keep class org.apache.poi.** { *; }
+-dontwarn org.apache.poi.**
+-keep class javax.mail.** { *; }
+-keep class com.sun.mail.** { *; }
