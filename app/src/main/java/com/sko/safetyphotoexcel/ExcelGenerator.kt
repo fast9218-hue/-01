@@ -3,6 +3,7 @@ package com.sko.safetyphotoexcel
 import android.content.Context
 import android.net.Uri
 import org.apache.poi.ss.usermodel.BorderStyle
+import org.apache.poi.ss.usermodel.CellType
 import org.apache.poi.ss.usermodel.ClientAnchor
 import org.apache.poi.ss.usermodel.HorizontalAlignment
 import org.apache.poi.ss.usermodel.VerticalAlignment
@@ -14,6 +15,7 @@ import org.apache.poi.xssf.usermodel.XSSFClientAnchor
 import org.apache.poi.xssf.usermodel.XSSFSheet
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 data class PhotoEntry(
@@ -24,12 +26,34 @@ data class PhotoEntry(
 
 object ExcelGenerator {
 
-    private data class BlockBounds(
-        val photoStartRow: Int, // 0-based inclusive
-        val photoEndRow: Int,   // 0-based inclusive
-        val captionStartRow: Int,
-        val captionEndRow: Int
+    private data class PhotoSlot(
+        val index: Int,
+        val sheetIndex: Int,
+        val startRow: Int,
+        val endRow: Int,
+        val startCol: Int,
+        val endCol: Int,
+        val labelRow: Int,
+        val labelCol: Int
     )
+
+    private val photoTagRegex = Regex("^사진\s*(\d+)$")
+    private val captionTagRegex = Regex("^내용\s*(\d+)$")
+
+    fun customTemplateFile(context: Context): File =
+        File(context.filesDir, "custom_template.xlsx")
+
+    enum class BuiltinTemplate(
+        val id: String,
+        val displayName: String,
+        val description: String,
+        val assetFile: String
+    ) {
+        VERTICAL_2("vertical_2", "세로 2단 기본형", "큰 사진 위아래 2장 + 자동 확장 (A4 세로)", "template_vertical_2.xlsx"),
+        GRID_2X2("grid_2x2", "2x2 격자형 (4장)", "한 페이지에 4장 나란히 배치 (A4 세로)", "template_grid_2x2.xlsx"),
+        BEFORE_AFTER("before_after", "작업 전·후 비교형", "좌측 작업 전 / 우측 작업 후 비교 (A4 가로)", "template_before_after.xlsx"),
+        LIST_ROW("list_row", "목록형 (좌 사진·우 설명)", "사진과 상세 설명을 좌우로 나란히 배치", "template_list_row.xlsx")
+    }
 
     fun generate(
         context: Context,
@@ -37,53 +61,81 @@ object ExcelGenerator {
         teamName: String,
         dateText: String,
         photos: List<PhotoEntry>,
-        outputFileName: String
+        outputFileName: String,
+        templateId: String = "vertical_2"
     ): File {
         require(photos.isNotEmpty()) { "최소 1장 이상의 사진이 필요합니다." }
 
-        val workbook = context.assets.open("업로드 양식.xlsx").use { input ->
-            XSSFWorkbook(input)
-        }
-        val sheet = workbook.getSheetAt(0)
+        val customFile = customTemplateFile(context)
+        val isCustom = (templateId == "custom" && customFile.exists())
+        val builtin = BuiltinTemplate.entries.firstOrNull { it.id == templateId } ?: BuiltinTemplate.VERTICAL_2
 
-        // 헤더 업데이트 (A1: 제목, A2: 팀명, H2: 날짜)
-        sheet.getRow(0)?.getCell(0)?.setCellValue(title)
-        sheet.getRow(1)?.getCell(0)?.setCellValue("팀명: $teamName")
-        val dateCell = sheet.getRow(1)?.getCell(7)
-        if (dateCell != null) {
-            dateCell.setCellValue(dateText)
+        val workbook = if (isCustom) {
+            FileInputStream(customFile).use { XSSFWorkbook(it) }
+        } else {
+            context.assets.open(builtin.assetFile).use { XSSFWorkbook(it) }
         }
 
-        // 기본 양식 블록: 사진1 (row 3..28, 내용 29..30), 사진2 (row 31..59, 내용 60..61)
-        val blocks = mutableListOf(
-            BlockBounds(photoStartRow = 3, photoEndRow = 28, captionStartRow = 29, captionEndRow = 30),
-            BlockBounds(photoStartRow = 31, photoEndRow = 59, captionStartRow = 60, captionEndRow = 61)
-        )
+        // 모든 시트에서 '사진1', '사진2', '사진3'... 셀(및 병합 범위) 자동 탐색
+        val detectedSlots = findPhotoSlots(workbook).toMutableList()
+        val captionPlaceholders = findCaptionPlaceholders(workbook)
 
-        // 사진이 3장 이상이면 동일한 규격으로 아래에 블록 추가 (사진3, 사진4...)
-        while (blocks.size < photos.size) {
-            val prev = blocks.last()
-            val photoStart = prev.captionEndRow + 1
-            val photoEnd = photoStart + 28 // 29행 높이 (사진2와 동일)
-            val capStart = photoEnd + 1
-            val capEnd = capStart + 1
-            createPhotoBlock(workbook, sheet, blocks.size + 1, photoStart, photoEnd, capStart, capEnd)
-            blocks.add(BlockBounds(photoStart, photoEnd, capStart, capEnd))
+        if (!isCustom) {
+            val sheet0 = workbook.getSheetAt(0)
+            sheet0.getRow(0)?.getCell(0)?.setCellValue(title)
+            updateTeamCellIfPresent(workbook, teamName)
+            updateDateCellIfPresent(workbook, dateText)
+        } else {
+            updateTeamCellIfPresent(workbook, teamName)
         }
 
-        // 사진이 1장만 있을 때 사진2 라벨/내용 정리
-        if (photos.size == 1) {
-            sheet.getRow(31)?.getCell(0)?.setCellValue("")
-            sheet.getRow(60)?.getCell(2)?.setCellValue("")
+        // 양식에 있는 사진 칸보다 사진이 더 많으면 첫 시트 하단에 자동 확장
+        if (detectedSlots.isNotEmpty() && detectedSlots.size < photos.size) {
+            val lastSheet = workbook.getSheetAt(detectedSlots.last().sheetIndex)
+            while (detectedSlots.size < photos.size) {
+                val nextIdx = detectedSlots.size + 1
+                val lastBottom = (lastSheet.lastRowNum).coerceAtLeast(detectedSlots.last().endRow + 2)
+                val photoStart = lastBottom + 1
+                val photoEnd = photoStart + 28
+                val capStart = photoEnd + 1
+                val capEnd = capStart + 1
+                createPhotoBlock(workbook, lastSheet, nextIdx, photoStart, photoEnd, capStart, capEnd)
+                detectedSlots.add(
+                    PhotoSlot(
+                        index = nextIdx,
+                        sheetIndex = detectedSlots.last().sheetIndex,
+                        startRow = photoStart,
+                        endRow = photoEnd,
+                        startCol = 0,
+                        endCol = 8,
+                        labelRow = photoStart,
+                        labelCol = 0
+                    )
+                )
+            }
         }
 
-        // 각 블록에 사진 및 내용 삽입
-        photos.forEachIndexed { index, photo ->
-            val block = blocks[index]
-            // 사진 번호 라벨 제거 (사진이 덮으므로 깔끔하게 비우거나 유지 가능)
-            sheet.getRow(block.photoStartRow)?.getCell(0)?.setCellValue("")
-            // 내용 텍스트 채우기 (C열 = col index 2)
-            sheet.getRow(block.captionStartRow)?.getCell(2)?.setCellValue(photo.caption)
+        require(detectedSlots.isNotEmpty()) {
+            "엑셀 파일에서 '사진1', '사진2' 등의 표시 셀을 찾지 못했습니다."
+        }
+
+        // 사진 삽입 및 내용 반영
+        photos.forEachIndexed { idx, photo ->
+            if (idx >= detectedSlots.size) return@forEachIndexed
+            val slot = detectedSlots[idx]
+            val sheet = workbook.getSheetAt(slot.sheetIndex)
+
+            // '사진N' 라벨 텍스트 비우기
+            sheet.getRow(slot.labelRow)?.getCell(slot.labelCol)?.setCellValue("")
+
+            // 내용(캡션) 반영: '내용N' 태그가 있으면 거기에, 없으면 사진 바로 아래 '내 용' 행에 기입
+            val explicitCap = captionPlaceholders[slot.index]
+            if (explicitCap != null) {
+                val capSheet = workbook.getSheetAt(explicitCap.first)
+                capSheet.getRow(explicitCap.second)?.getCell(explicitCap.third)?.setCellValue(photo.caption)
+            } else {
+                writeCaptionBelowSlotIfPresent(sheet, slot, photo.caption)
+            }
 
             val processed = ImageUtils.loadNormalizedJpeg(context, photo.uri)
             insertCenteredPicture(
@@ -92,16 +144,12 @@ object ExcelGenerator {
                 imageBytes = processed.bytes,
                 imgWidthPx = processed.widthPx,
                 imgHeightPx = processed.heightPx,
-                startRow = block.photoStartRow,
-                endRow = block.photoEndRow,
-                startCol = 0,
-                endCol = 8 // A..I
+                startRow = slot.startRow,
+                endRow = slot.endRow,
+                startCol = slot.startCol,
+                endCol = slot.endCol
             )
         }
-
-        // 인쇄 영역 확장
-        val lastRow = blocks[photos.size.coerceAtLeast(2) - 1].captionEndRow + 1
-        workbook.setPrintArea(0, 0, 8, 0, lastRow - 1)
 
         val outDir = File(context.cacheDir, "excel").apply { mkdirs() }
         val outFile = File(outDir, outputFileName)
@@ -110,6 +158,102 @@ object ExcelGenerator {
         }
         workbook.close()
         return outFile
+    }
+
+    private fun findPhotoSlots(workbook: XSSFWorkbook): List<PhotoSlot> {
+        val result = mutableListOf<PhotoSlot>()
+        for (sIdx in 0 until workbook.numberOfSheets) {
+            val sheet = workbook.getSheetAt(sIdx)
+            for (r in 0..sheet.lastRowNum) {
+                val row = sheet.getRow(r) ?: continue
+                for (c in 0 until row.lastCellNum) {
+                    val cell = row.getCell(c) ?: continue
+                    if (cell.cellType != CellType.STRING) continue
+                    val text = cell.stringCellValue.trim()
+                    val match = photoTagRegex.matchEntire(text) ?: continue
+                    val num = match.groupValues[1].toIntOrNull() ?: continue
+
+                    val merged = sheet.mergedRegions.firstOrNull {
+                        it.isInRange(r, c)
+                    }
+                    result.add(
+                        PhotoSlot(
+                            index = num,
+                            sheetIndex = sIdx,
+                            startRow = merged?.firstRow ?: r,
+                            endRow = merged?.lastRow ?: r,
+                            startCol = merged?.firstColumn ?: c,
+                            endCol = merged?.lastColumn ?: c,
+                            labelRow = r,
+                            labelCol = c
+                        )
+                    )
+                }
+            }
+        }
+        return result.sortedBy { it.index }
+    }
+
+    private fun findCaptionPlaceholders(workbook: XSSFWorkbook): Map<Int, Triple<Int, Int, Int>> {
+        val map = mutableMapOf<Int, Triple<Int, Int, Int>>()
+        for (sIdx in 0 until workbook.numberOfSheets) {
+            val sheet = workbook.getSheetAt(sIdx)
+            for (r in 0..sheet.lastRowNum) {
+                val row = sheet.getRow(r) ?: continue
+                for (c in 0 until row.lastCellNum) {
+                    val cell = row.getCell(c) ?: continue
+                    if (cell.cellType != CellType.STRING) continue
+                    val match = captionTagRegex.matchEntire(cell.stringCellValue.trim()) ?: continue
+                    val num = match.groupValues[1].toIntOrNull() ?: continue
+                    map[num] = Triple(sIdx, r, c)
+                }
+            }
+        }
+        return map
+    }
+
+    private fun writeCaptionBelowSlotIfPresent(sheet: XSSFSheet, slot: PhotoSlot, caption: String) {
+        val checkRow = sheet.getRow(slot.endRow + 1) ?: return
+        val firstCell = checkRow.getCell(slot.startCol) ?: return
+        if (firstCell.cellType == CellType.STRING && firstCell.stringCellValue.replace(" ", "") == "내용") {
+            val mergedLabel = sheet.mergedRegions.firstOrNull {
+                it.isInRange(slot.endRow + 1, slot.startCol)
+            }
+            val targetCol = (mergedLabel?.lastColumn ?: slot.startCol) + 1
+            val targetCell = checkRow.getCell(targetCol) ?: checkRow.createCell(targetCol)
+            targetCell.setCellValue(caption)
+        }
+    }
+
+    private fun updateDateCellIfPresent(workbook: XSSFWorkbook, dateText: String) {
+        val sheet = workbook.getSheetAt(0)
+        val row1 = sheet.getRow(1) ?: return
+        for (c in 0 until row1.lastCellNum) {
+            val cell = row1.getCell(c) ?: continue
+            if (cell.cellType == CellType.STRING && cell.stringCellValue.trim().startsWith("202")) {
+                cell.setCellValue(dateText)
+                return
+            } else if (cell.cellType == CellType.NUMERIC && c >= 5) {
+                cell.setCellValue(dateText)
+                return
+            }
+        }
+    }
+
+    private fun updateTeamCellIfPresent(workbook: XSSFWorkbook, teamName: String) {
+        for (sIdx in 0 until workbook.numberOfSheets) {
+            val sheet = workbook.getSheetAt(sIdx)
+            for (r in 0..minOf(10, sheet.lastRowNum)) {
+                val row = sheet.getRow(r) ?: continue
+                for (c in 0 until row.lastCellNum) {
+                    val cell = row.getCell(c) ?: continue
+                    if (cell.cellType == CellType.STRING && cell.stringCellValue.trim().startsWith("팀명:")) {
+                        cell.setCellValue("팀명: $teamName")
+                        return
+                    }
+                }
+            }
+        }
     }
 
     private fun createPhotoBlock(
@@ -193,7 +337,6 @@ object ExcelGenerator {
         val pictureIdx = workbook.addPicture(imageBytes, Workbook.PICTURE_TYPE_JPEG)
         val drawing = sheet.createDrawingPatriarch()
 
-        // 박스 전체 너비/높이(EMU) 계산
         val colWidthsPx = (startCol..endCol).map { sheet.getColumnWidthInPixels(it).toDouble() }
         val rowHeightsPt = (startRow..endRow).map {
             val row = sheet.getRow(it)
@@ -204,7 +347,6 @@ object ExcelGenerator {
         val totalBoxWidthEmu = colWidthsPx.sum() * Units.EMU_PER_PIXEL
         val totalBoxHeightEmu = rowHeightsPt.sum() * Units.EMU_PER_POINT
 
-        // 테두리와 겹치지 않도록 상하좌우 4% 여백 부여
         val availW = totalBoxWidthEmu * 0.92
         val availH = totalBoxHeightEmu * 0.92
 

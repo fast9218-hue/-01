@@ -63,6 +63,40 @@ fun SafetyPhotoExcelScreen() {
         mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.KOREA).format(Date()))
     }
     var mailConfig by remember { mutableStateOf(prefs.loadMailConfig()) }
+    var templateId by remember { mutableStateOf(prefs.loadTemplateId()) }
+    var customTemplateName by remember { mutableStateOf(prefs.loadCustomTemplateName()) }
+    var showTemplateDialog by remember { mutableStateOf(false) }
+
+    val templatePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                var displayName = "사용자_양식.xlsx"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && nameIdx >= 0) {
+                        displayName = cursor.getString(nameIdx) ?: displayName
+                    }
+                }
+                if (!displayName.lowercase().endsWith(".xlsx")) {
+                    Toast.makeText(context, ".xlsx 파일만 선택 가능합니다.", Toast.LENGTH_SHORT).show()
+                    return@rememberLauncherForActivityResult
+                }
+                val dest = ExcelGenerator.customTemplateFile(context)
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    dest.outputStream().use { output -> input.copyTo(output) }
+                }
+                prefs.saveCustomTemplateName(displayName)
+                prefs.saveTemplateId("custom")
+                customTemplateName = displayName
+                templateId = "custom"
+                Toast.makeText(context, "양식 적용: $displayName", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "양식 불러오기 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     val photos = remember { mutableStateListOf<PhotoEntry>() }
     var nextId by remember { mutableLongStateOf(1L) }
@@ -134,7 +168,7 @@ fun SafetyPhotoExcelScreen() {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "${teamName}_안전보건교육사진_$dateText")
+            putExtra(Intent.EXTRA_SUBJECT, "${docTitle.replace(" ", "")}_$dateText")
             if (mailConfig.recipientEmail.isNotBlank()) {
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(mailConfig.recipientEmail))
             }
@@ -146,7 +180,7 @@ fun SafetyPhotoExcelScreen() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("안전보건 사진 엑셀 생성기", fontWeight = FontWeight.Bold) },
+                title = { Text("엑셀 사진 자동 삽입", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = { showMailDialog = true }) {
                         Icon(
@@ -195,6 +229,26 @@ fun SafetyPhotoExcelScreen() {
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val currentLabel = if (templateId == "custom" && customTemplateName != null) {
+                            "내 파일 ($customTemplateName)"
+                        } else {
+                            ExcelGenerator.BuiltinTemplate.entries.firstOrNull { it.id == templateId }?.displayName
+                                ?: "세로 2단 기본형"
+                        }
+                        Text(
+                            text = "양식: $currentLabel",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { showTemplateDialog = true }) {
+                            Text("양식 선택")
+                        }
+                    }
                 }
             }
 
@@ -362,7 +416,8 @@ fun SafetyPhotoExcelScreen() {
                                         teamName = teamName,
                                         dateText = dateText,
                                         photos = photos.toList(),
-                                        outputFileName = "${teamName}_안전보건교육사진_${dateText}.xlsx"
+                                        outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
+                                        templateId = templateId
                                     )
                                 }
                                 shareExcelFile(file)
@@ -392,7 +447,7 @@ fun SafetyPhotoExcelScreen() {
                         isWorking = true
                         scope.launch {
                             try {
-                                val fileName = "${teamName}_안전보건교육사진_${dateText}.xlsx"
+                                val fileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx"
                                 val file = withContext(Dispatchers.IO) {
                                     ExcelGenerator.generate(
                                         context = context,
@@ -400,13 +455,14 @@ fun SafetyPhotoExcelScreen() {
                                         teamName = teamName,
                                         dateText = dateText,
                                         photos = photos.toList(),
-                                        outputFileName = fileName
+                                        outputFileName = fileName,
+                                        templateId = templateId
                                     )
                                 }
                                 EmailSender.sendExcelAttachment(
                                     config = mailConfig,
-                                    subject = "[안전보건교육사진] $teamName ($dateText)",
-                                    bodyText = "$dateText $teamName 안전보건 교육 사진 엑셀 파일(총 ${photos.size}장)을 첨부합니다.",
+                                    subject = "[엑셀 사진 첨부] $docTitle ($dateText)",
+                                    bodyText = "$dateText $docTitle 엑셀 파일(총 ${photos.size}장)을 첨부합니다.",
                                     excelFile = file
                                 )
                                 statusMessage = "${mailConfig.recipientEmail} 로 메일 발송을 완료했습니다."
@@ -433,6 +489,61 @@ fun SafetyPhotoExcelScreen() {
                 }
             }
         }
+    }
+
+    if (showTemplateDialog) {
+        AlertDialog(
+            onDismissRequest = { showTemplateDialog = false },
+            title = { Text("엑셀 양식 선택") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ExcelGenerator.BuiltinTemplate.entries.forEach { tpl ->
+                        val selected = (templateId == tpl.id)
+                        OutlinedCard(
+                            onClick = {
+                                templateId = tpl.id
+                                prefs.saveTemplateId(tpl.id)
+                                showTemplateDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(selected = selected, onClick = null)
+                                Spacer(Modifier.width(8.dp))
+                                Column {
+                                    Text(tpl.displayName, fontWeight = FontWeight.Bold)
+                                    Text(tpl.description, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                    Button(
+                        onClick = {
+                            showTemplateDialog = false
+                            templatePickerLauncher.launch(
+                                arrayOf(
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    "application/octet-stream",
+                                    "*/*"
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("내 엑셀 파일(.xlsx) 불러오기")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTemplateDialog = false }) { Text("닫기") }
+            }
+        )
     }
 
     if (showMailDialog) {

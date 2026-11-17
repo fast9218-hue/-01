@@ -51,12 +51,30 @@ class PrefsManager(context: Context) {
     }
 
     fun loadDocTitle(): String =
-        prefs.getString("doc_title", "안  전  보  건  교  육  사  진") ?: "안  전  보  건  교  육  사  진"
+        prefs.getString("doc_title", "사  진  대  지") ?: "사  진  대  지"
 
     fun loadTeamName(): String =
         prefs.getString("team_name", "유니트검증팀") ?: "유니트검증팀"
 
     fun loadCaptionPrefix(): String =
-        prefs.getString("caption_prefix", "11월 유니트검증팀 안전보건 교육 시행 사진")
-            ?: "11월 유니트검증팀 안전보건 교육 시행 사진"
+        prefs.getString("caption_prefix", "현장 사진")
+            ?: "현장 사진"
+
+    fun saveTemplateId(id: String) {
+        prefs.edit().putString("template_id", id).apply()
+    }
+
+    fun loadTemplateId(): String =
+        prefs.getString("template_id", "vertical_2") ?: "vertical_2"
+
+    fun saveCustomTemplateName(name: String?) {
+        if (name == null) {
+            prefs.edit().remove("custom_template_name").apply()
+        } else {
+            prefs.edit().putString("custom_template_name", name).apply()
+        }
+    }
+
+    fun loadCustomTemplateName(): String? =
+        prefs.getString("custom_template_name", null)
 }
