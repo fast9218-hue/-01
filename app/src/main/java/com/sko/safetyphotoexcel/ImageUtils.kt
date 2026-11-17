@@ -3,11 +3,18 @@ package com.sko.safetyphotoexcel
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.net.Uri
-import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -17,13 +24,14 @@ data class ProcessedImage(
     val heightPx: Int
 )
 
+data class NormalizedStroke(
+    val points: List<Pair<Float, Float>>, // 0f..1f normalized coordinates
+    val colorArgb: Int,
+    val strokeRatio: Float = 0.012f
+)
+
 object ImageUtils {
-    fun loadNormalizedJpeg(
-        context: Context,
-        uri: Uri,
-        maxDimensionPx: Int = 1600,
-        jpegQuality: Int = 88
-    ): ProcessedImage {
+    fun loadUprightBitmap(context: Context, uri: Uri, maxDimensionPx: Int = 1600): Bitmap {
         val orientation = context.contentResolver.openInputStream(uri)?.use { input ->
             ExifInterface(input).getAttributeInt(
                 ExifInterface.TAG_ORIENTATION,
@@ -42,19 +50,115 @@ object ImageUtils {
             BitmapFactory.decodeStream(input, null, decodeOpts)
         } ?: error("사진을 불러올 수 없습니다: $uri")
 
-        val rotated = applyExifRotation(rawBitmap, orientation)
-        if (rotated !== rawBitmap) rawBitmap.recycle()
+        val exifRotated = applyExifRotation(rawBitmap, orientation)
+        if (exifRotated !== rawBitmap) rawBitmap.recycle()
 
-        val scaled = scaleDownIfNeeded(rotated, maxDimensionPx)
-        if (scaled !== rotated) rotated.recycle()
+        val scaled = scaleDownIfNeeded(exifRotated, maxDimensionPx)
+        if (scaled !== exifRotated) exifRotated.recycle()
+        return scaled
+    }
+
+    fun saveAnnotatedCopy(
+        context: Context,
+        sourceUri: Uri,
+        strokes: List<NormalizedStroke>
+    ): Uri {
+        val base = loadUprightBitmap(context, sourceUri, 1600)
+        val mutable = base.copy(Bitmap.Config.ARGB_8888, true)
+        if (mutable !== base) base.recycle()
+
+        val canvas = Canvas(mutable)
+        val minSide = minOf(mutable.width, mutable.height).toFloat()
+
+        for (stroke in strokes) {
+            if (stroke.points.size < 2) continue
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = stroke.colorArgb
+                style = Paint.Style.STROKE
+                strokeWidth = (minSide * stroke.strokeRatio).coerceAtLeast(5f)
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+            val path = Path()
+            val first = stroke.points.first()
+            path.moveTo(first.first * mutable.width, first.second * mutable.height)
+            for (i in 1 until stroke.points.size) {
+                val pt = stroke.points[i]
+                path.lineTo(pt.first * mutable.width, pt.second * mutable.height)
+            }
+            canvas.drawPath(path, paint)
+        }
+
+        val photoDir = File(context.cacheDir, "photos").apply { mkdirs() }
+        val outFile = File(photoDir, "MARKUP_${System.currentTimeMillis()}.jpg")
+        FileOutputStream(outFile).use { fos ->
+            mutable.compress(Bitmap.CompressFormat.JPEG, 92, fos)
+        }
+        mutable.recycle()
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", outFile)
+    }
+
+    fun loadNormalizedJpeg(
+        context: Context,
+        uri: Uri,
+        extraRotationDegrees: Int = 0,
+        watermarkText: String? = null,
+        maxDimensionPx: Int = 1600,
+        jpegQuality: Int = 88
+    ): ProcessedImage {
+        val base = loadUprightBitmap(context, uri, maxDimensionPx)
+
+        val userRotated = if (extraRotationDegrees % 360 != 0) {
+            val m = Matrix().apply { postRotate((extraRotationDegrees % 360).toFloat()) }
+            val r = Bitmap.createBitmap(base, 0, 0, base.width, base.height, m, true)
+            if (r !== base) base.recycle()
+            r
+        } else {
+            base
+        }
+
+        val finalBmp = if (!watermarkText.isNullOrBlank()) {
+            drawWatermark(userRotated, watermarkText).also {
+                if (it !== userRotated) userRotated.recycle()
+            }
+        } else {
+            userRotated
+        }
 
         val out = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
-        val w = scaled.width
-        val h = scaled.height
-        scaled.recycle()
+        finalBmp.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
+        val w = finalBmp.width
+        val h = finalBmp.height
+        finalBmp.recycle()
 
         return ProcessedImage(out.toByteArray(), w, h)
+    }
+
+    private fun drawWatermark(src: Bitmap, text: String): Bitmap {
+        val mutable = src.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(mutable)
+        val textSize = (mutable.width * 0.026f).coerceIn(24f, 44f)
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            this.textSize = textSize
+            isFakeBoldText = true
+        }
+        val padH = textSize * 0.6f
+        val padV = textSize * 0.35f
+        val textW = textPaint.measureText(text)
+        val margin = textSize * 0.7f
+        val rect = RectF(
+            mutable.width - textW - padH * 2 - margin,
+            mutable.height - textSize - padV * 2 - margin,
+            mutable.width - margin,
+            mutable.height - margin
+        )
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(165, 15, 23, 42)
+        }
+        canvas.drawRoundRect(rect, 10f, 10f, bgPaint)
+        canvas.drawText(text, rect.left + padH, rect.bottom - padV - textPaint.descent() * 0.3f, textPaint)
+        return mutable
     }
 
     private fun calculateInSampleSize(width: Int, height: Int, maxDim: Int): Int {

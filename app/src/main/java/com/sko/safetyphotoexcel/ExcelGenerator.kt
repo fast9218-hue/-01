@@ -21,7 +21,8 @@ import java.io.FileOutputStream
 data class PhotoEntry(
     val id: Long,
     val uri: Uri,
-    val caption: String
+    val caption: String,
+    val rotationDegrees: Int = 0
 )
 
 object ExcelGenerator {
@@ -39,6 +40,19 @@ object ExcelGenerator {
 
     private val photoTagRegex = Regex("""^사진\s*(\d+)$""")
     private val captionTagRegex = Regex("""^내용\s*(\d+)$""")
+
+    fun countDetectedSlots(file: File): Int {
+        return try {
+            FileInputStream(file).use { fis ->
+                val wb = XSSFWorkbook(fis)
+                val count = findPhotoSlots(wb).size
+                wb.close()
+                count
+            }
+        } catch (_: Exception) {
+            0
+        }
+    }
 
     fun customTemplateFile(context: Context): File =
         File(context.filesDir, "custom_template.xlsx")
@@ -62,7 +76,9 @@ object ExcelGenerator {
         dateText: String,
         photos: List<PhotoEntry>,
         outputFileName: String,
-        templateId: String = "vertical_2"
+        templateId: String = "vertical_2",
+        addWatermark: Boolean = false,
+        maxDimensionPx: Int = 1600
     ): File {
         require(photos.isNotEmpty()) { "최소 1장 이상의 사진이 필요합니다." }
 
@@ -137,7 +153,14 @@ object ExcelGenerator {
                 writeCaptionBelowSlotIfPresent(sheet, slot, photo.caption)
             }
 
-            val processed = ImageUtils.loadNormalizedJpeg(context, photo.uri)
+            val wm = if (addWatermark) "$dateText · $teamName" else null
+            val processed = ImageUtils.loadNormalizedJpeg(
+                context = context,
+                uri = photo.uri,
+                extraRotationDegrees = photo.rotationDegrees,
+                watermarkText = wm,
+                maxDimensionPx = maxDimensionPx
+            )
             insertCenteredPicture(
                 workbook = workbook,
                 sheet = sheet,

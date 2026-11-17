@@ -57,8 +57,7 @@ class PrefsManager(context: Context) {
         prefs.getString("team_name", "유니트검증팀") ?: "유니트검증팀"
 
     fun loadCaptionPrefix(): String =
-        prefs.getString("caption_prefix", "현장 사진")
-            ?: "현장 사진"
+        prefs.getString("caption_prefix", "현장 사진") ?: "현장 사진"
 
     fun saveTemplateId(id: String) {
         prefs.edit().putString("template_id", id).apply()
@@ -77,4 +76,18 @@ class PrefsManager(context: Context) {
 
     fun loadCustomTemplateName(): String? =
         prefs.getString("custom_template_name", null)
+
+    fun saveWatermarkEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("watermark_enabled", enabled).apply()
+    }
+
+    fun loadWatermarkEnabled(): Boolean =
+        prefs.getBoolean("watermark_enabled", false)
+
+    fun saveMaxDimensionPx(px: Int) {
+        prefs.edit().putInt("max_dim_px", px).apply()
+    }
+
+    fun loadMaxDimensionPx(): Int =
+        prefs.getInt("max_dim_px", 1600)
 }
