@@ -565,8 +565,7 @@ fun PremiumExcelApp() {
                                     )
                                     Spacer(Modifier.height(4.dp))
                                     Text(
-                                        "사진 위 펜 아이콘을 누르면 불량·강조 부위에
-빨간 원이나 화살표를 직접 그릴 수 있습니다.",
+                                        "사진 위 펜 아이콘을 누르면 불량·강조 부위에 빨간 원이나 화살표를 직접 그릴 수 있습니다.",
                                         fontSize = 12.sp,
                                         color = Color.Gray
                                     )
@@ -824,8 +823,7 @@ fun PremiumExcelApp() {
                                                     file to saveExcelToDownloads(file)
                                                 }
                                                 lastGeneratedFile = result.first
-                                                statusMessage = "폰에 저장되었습니다.
-경로: ${result.second}"
+                                                statusMessage = "폰에 저장되었습니다. (경로: ${result.second})"
                                             } catch (e: Exception) {
                                                 statusMessage = "저장 오류: ${e.message}"
                                             } finally {
@@ -1476,7 +1474,7 @@ fun PhotoMarkupDialog(
                     )
                     IconButton(
                         enabled = strokes.isNotEmpty(),
-                        onClick = { if (strokes.isNotEmpty()) strokes.removeLast() }
+                        onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) }
                     ) {
                         Icon(Icons.Default.Undo, contentDescription = "실행취소", tint = Color.White)
                     }
