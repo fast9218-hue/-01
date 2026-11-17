@@ -37,8 +37,8 @@ object ExcelGenerator {
         val labelCol: Int
     )
 
-    private val photoTagRegex = Regex("^사진\s*(\d+)$")
-    private val captionTagRegex = Regex("^내용\s*(\d+)$")
+    private val photoTagRegex = Regex("""^사진\s*(\d+)$""")
+    private val captionTagRegex = Regex("""^내용\s*(\d+)$""")
 
     fun customTemplateFile(context: Context): File =
         File(context.filesDir, "custom_template.xlsx")
