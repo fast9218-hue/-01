@@ -4,6 +4,10 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.os.Bundle
 import android.widget.Toast
@@ -13,6 +17,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -164,18 +173,56 @@ fun SafetyPhotoExcelScreen() {
         }
     }
 
-    fun shareExcelFile(file: File) {
+    fun saveExcelToDownloads(file: File): String {
+        val mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val itemUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("다운로드 폴더에 파일을 생성할 수 없습니다.")
+            resolver.openOutputStream(itemUri)?.use { out ->
+                file.inputStream().use { input -> input.copyTo(out) }
+            }
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(itemUri, values, null, null)
+            "내 파일 > 다운로드 > ${file.name}"
+        } else {
+            val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.filesDir
+            val dest = File(dir, file.name)
+            file.copyTo(dest, overwrite = true)
+            dest.absolutePath
+        }
+    }
+
+    fun shareExcelToNaverOrChooser(file: File, preferNaver: Boolean) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
+        val subject = "[엑셀 사진] $docTitle ($dateText)"
+        val baseIntent = Intent(Intent.ACTION_SEND).apply {
             type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "${docTitle.replace(" ", "")}_$dateText")
+            putExtra(Intent.EXTRA_SUBJECT, subject)
+            putExtra(Intent.EXTRA_TEXT, "$dateText $docTitle 엑셀 파일입니다.")
             if (mailConfig.recipientEmail.isNotBlank()) {
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(mailConfig.recipientEmail))
             }
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "엑셀 파일 공유 / 보내기"))
+        if (preferNaver) {
+            val naverIntent = Intent(baseIntent).apply { setPackage("com.nhn.android.mail") }
+            try {
+                context.startActivity(naverIntent)
+                return
+            } catch (_: Exception) {
+                Toast.makeText(context, "네이버 메일 앱이 없어 공유 창을 엽니다.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        context.startActivity(Intent.createChooser(baseIntent, "엑셀 파일 공유 / 메일 보내기"))
     }
 
     Scaffold(
@@ -396,44 +443,83 @@ fun SafetyPhotoExcelScreen() {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // 하단 실행 버튼
-            Row(
+            // 하단 실행 버튼 (폰 저장 / 네이버 메일 / 자동 발송)
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                OutlinedButton(
-                    enabled = photos.isNotEmpty() && !isWorking,
-                    onClick = {
-                        prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
-                        isWorking = true
-                        scope.launch {
-                            try {
-                                val file = withContext(Dispatchers.IO) {
-                                    ExcelGenerator.generate(
-                                        context = context,
-                                        title = docTitle,
-                                        teamName = teamName,
-                                        dateText = dateText,
-                                        photos = photos.toList(),
-                                        outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
-                                        templateId = templateId
-                                    )
-                                }
-                                shareExcelFile(file)
-                            } catch (e: Exception) {
-                                statusMessage = "생성 오류: ${e.message}"
-                            } finally {
-                                isWorking = false
-                            }
-                        }
-                    },
-                    modifier = Modifier.weight(1f)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Share, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("엑셀 공유")
+                    OutlinedButton(
+                        enabled = photos.isNotEmpty() && !isWorking,
+                        onClick = {
+                            prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
+                            isWorking = true
+                            scope.launch {
+                                try {
+                                    val savedPath = withContext(Dispatchers.IO) {
+                                        val file = ExcelGenerator.generate(
+                                            context = context,
+                                            title = docTitle,
+                                            teamName = teamName,
+                                            dateText = dateText,
+                                            photos = photos.toList(),
+                                            outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
+                                            templateId = templateId
+                                        )
+                                        saveExcelToDownloads(file)
+                                    }
+                                    statusMessage = "폰에 저장되었습니다.\n경로: $savedPath"
+                                } catch (e: Exception) {
+                                    statusMessage = "저장 오류: ${e.message}"
+                                } finally {
+                                    isWorking = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("폰에 저장")
+                    }
+
+                    OutlinedButton(
+                        enabled = photos.isNotEmpty() && !isWorking,
+                        onClick = {
+                            prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
+                            isWorking = true
+                            scope.launch {
+                                try {
+                                    val file = withContext(Dispatchers.IO) {
+                                        ExcelGenerator.generate(
+                                            context = context,
+                                            title = docTitle,
+                                            teamName = teamName,
+                                            dateText = dateText,
+                                            photos = photos.toList(),
+                                            outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
+                                            templateId = templateId
+                                        )
+                                    }
+                                    shareExcelToNaverOrChooser(file, preferNaver = true)
+                                } catch (e: Exception) {
+                                    statusMessage = "공유 오류: ${e.message}"
+                                } finally {
+                                    isWorking = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Mail, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("네이버 메일")
+                    }
                 }
 
                 Button(
@@ -474,7 +560,7 @@ fun SafetyPhotoExcelScreen() {
                             }
                         }
                     },
-                    modifier = Modifier.weight(1.3f)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     if (isWorking) {
                         CircularProgressIndicator(
@@ -486,7 +572,7 @@ fun SafetyPhotoExcelScreen() {
                         Icon(Icons.Default.Send, contentDescription = null)
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text("생성 및 자동 발송")
+                    Text("엑셀 생성 및 메일 자동 발송")
                 }
             }
         }
@@ -497,7 +583,10 @@ fun SafetyPhotoExcelScreen() {
             onDismissRequest = { showTemplateDialog = false },
             title = { Text("엑셀 양식 선택") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     ExcelGenerator.BuiltinTemplate.entries.forEach { tpl ->
                         val selected = (templateId == tpl.id)
                         OutlinedCard(
@@ -509,12 +598,14 @@ fun SafetyPhotoExcelScreen() {
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 RadioButton(selected = selected, onClick = null)
-                                Spacer(Modifier.width(8.dp))
-                                Column {
+                                Spacer(Modifier.width(6.dp))
+                                TemplatePreviewThumbnail(tpl.id)
+                                Spacer(Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
                                     Text(tpl.displayName, fontWeight = FontWeight.Bold)
                                     Text(tpl.description, style = MaterialTheme.typography.bodySmall)
                                 }
@@ -658,4 +749,142 @@ fun MailSettingsDialog(
             }
         }
     )
+}
+
+@Composable
+fun TemplatePreviewThumbnail(templateId: String) {
+    val lineColor = Color(0xFF5B6B82)
+    val headerBg = Color(0xFFDDE7F5)
+    val photoBg = Color(0xFFF3F6FA)
+    val isLandscape = (templateId == "before_after")
+    val boxW = if (isLandscape) 64.dp else 48.dp
+    val boxH = if (isLandscape) 46.dp else 64.dp
+
+    Column(
+        modifier = Modifier
+            .size(width = boxW, height = boxH)
+            .background(Color.White, RoundedCornerShape(3.dp))
+            .border(1.dp, lineColor, RoundedCornerShape(3.dp))
+            .padding(3.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        // 제목 바
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .background(headerBg)
+                .border(0.5.dp, lineColor)
+        )
+        when (templateId) {
+            "vertical_2" -> {
+                repeat(2) { idx ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .background(photoBg)
+                            .border(0.5.dp, lineColor),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("${idx + 1}", fontSize = 8.sp, color = lineColor, fontWeight = FontWeight.Bold)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .border(0.5.dp, lineColor)
+                    )
+                }
+            }
+            "grid_2x2" -> {
+                repeat(2) { rowIdx ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        repeat(2) { colIdx ->
+                            val num = rowIdx * 2 + colIdx + 1
+                            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f)
+                                        .background(photoBg)
+                                        .border(0.5.dp, lineColor),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("$num", fontSize = 7.sp, color = lineColor, fontWeight = FontWeight.Bold)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(3.dp)
+                                        .border(0.5.dp, lineColor)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            "before_after" -> {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    listOf("전", "후").forEach { label ->
+                        Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .background(photoBg)
+                                    .border(0.5.dp, lineColor),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(label, fontSize = 8.sp, color = lineColor, fontWeight = FontWeight.Bold)
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(5.dp)
+                                    .border(0.5.dp, lineColor)
+                            )
+                        }
+                    }
+                }
+            }
+            else -> {
+                repeat(3) { idx ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .weight(0.45f)
+                                .fillMaxHeight()
+                                .background(photoBg)
+                                .border(0.5.dp, lineColor),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("${idx + 1}", fontSize = 7.sp, color = lineColor, fontWeight = FontWeight.Bold)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .weight(0.55f)
+                                .fillMaxHeight()
+                                .border(0.5.dp, lineColor)
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
