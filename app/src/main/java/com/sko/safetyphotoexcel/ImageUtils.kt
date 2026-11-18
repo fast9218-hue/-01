@@ -117,12 +117,15 @@ object ImageUtils {
             base
         }
 
-        val finalBmp = if (!watermarkText.isNullOrBlank()) {
+        val watermarked = if (!watermarkText.isNullOrBlank()) {
             drawWatermark(userRotated, watermarkText).also {
                 if (it !== userRotated) userRotated.recycle()
             }
         } else {
             userRotated
+        }
+        val finalBmp = drawPhotoBorder(watermarked).also {
+            if (it !== watermarked) watermarked.recycle()
         }
 
         val out = ByteArrayOutputStream()
@@ -132,6 +135,20 @@ object ImageUtils {
         finalBmp.recycle()
 
         return ProcessedImage(out.toByteArray(), w, h)
+    }
+
+    private fun drawPhotoBorder(src: Bitmap): Bitmap {
+        val mutable = if (src.isMutable) src else src.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(mutable)
+        val strokeW = (minOf(mutable.width, mutable.height) * 0.006f).coerceIn(2f, 6f)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(30, 58, 95)
+            style = Paint.Style.STROKE
+            strokeWidth = strokeW
+        }
+        val half = strokeW / 2f
+        canvas.drawRect(half, half, mutable.width - half, mutable.height - half, paint)
+        return mutable
     }
 
     private fun drawWatermark(src: Bitmap, text: String): Bitmap {

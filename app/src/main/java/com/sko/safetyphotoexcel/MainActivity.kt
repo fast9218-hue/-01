@@ -41,7 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -52,6 +51,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
@@ -99,12 +100,26 @@ fun PremiumExcelApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { PrefsManager(context) }
+    val focusManager = LocalFocusManager.current
+
+    // 키보드가 올라왔는지 감지 (키보드가 올라오면 상단 배너·하단 버튼을 자동으로 숨겨 입력창이 넓게 보이도록 처리)
+    val imeBottomPx = WindowInsets.ime.getBottom(LocalDensity.current)
+    val isKeyboardOpen = imeBottomPx > 100
 
     var currentTab by remember { mutableIntStateOf(0) } // 0: 작업실, 1: 양식 갤러리, 2: 보관함·설정
     var isGridView by remember { mutableStateOf(false) }
     var infoExpanded by remember { mutableStateOf(false) }
+    var showTitleEditDialog by remember { mutableStateOf(false) }
 
-    var docTitle by remember { mutableStateOf(prefs.loadDocTitle()) }
+    var docTitle by remember {
+        val customFile = ExcelGenerator.customTemplateFile(context)
+        val initial = if (prefs.loadTemplateId() == "custom" && customFile.exists()) {
+            ExcelGenerator.extractTemplateTitle(customFile) ?: prefs.loadDocTitle()
+        } else {
+            prefs.loadDocTitle()
+        }
+        mutableStateOf(initial)
+    }
     var teamName by remember { mutableStateOf(prefs.loadTeamName()) }
     var captionPrefix by remember { mutableStateOf(prefs.loadCaptionPrefix()) }
     var dateText by remember {
@@ -156,6 +171,11 @@ fun PremiumExcelApp() {
                 }
                 val slots = ExcelGenerator.countDetectedSlots(dest)
                 customSlotCount = slots
+                // 업로드한 엑셀 양식 1행(A1)에 제목이 있으면 자동으로 문서 제목에 반영
+                ExcelGenerator.extractTemplateTitle(dest)?.let { extracted ->
+                    docTitle = extracted
+                    prefs.saveDocDefaults(extracted, teamName, captionPrefix)
+                }
                 prefs.saveCustomTemplateName(displayName)
                 prefs.saveTemplateId("custom")
                 customTemplateName = displayName
@@ -287,25 +307,28 @@ fun PremiumExcelApp() {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            NavigationBar(containerColor = Color.White, tonalElevation = 6.dp) {
-                NavigationBarItem(
-                    selected = currentTab == 0,
-                    onClick = { currentTab = 0 },
-                    icon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
-                    label = { Text("작업실") }
-                )
-                NavigationBarItem(
-                    selected = currentTab == 1,
-                    onClick = { currentTab = 1 },
-                    icon = { Icon(Icons.Default.GridView, contentDescription = null) },
-                    label = { Text("양식 갤러리") }
-                )
-                NavigationBarItem(
-                    selected = currentTab == 2,
-                    onClick = { currentTab = 2 },
-                    icon = { Icon(Icons.Default.FolderSpecial, contentDescription = null) },
-                    label = { Text("보관함·설정") }
-                )
+            // 키보드가 올라왔을 때는 하단 탭바를 숨겨서 입력창 공간 확보
+            if (!isKeyboardOpen) {
+                NavigationBar(containerColor = Color.White, tonalElevation = 6.dp) {
+                    NavigationBarItem(
+                        selected = currentTab == 0,
+                        onClick = { currentTab = 0 },
+                        icon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
+                        label = { Text("작업실") }
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 1,
+                        onClick = { currentTab = 1 },
+                        icon = { Icon(Icons.Default.GridView, contentDescription = null) },
+                        label = { Text("양식 갤러리") }
+                    )
+                    NavigationBarItem(
+                        selected = currentTab == 2,
+                        onClick = { currentTab = 2 },
+                        icon = { Icon(Icons.Default.FolderSpecial, contentDescription = null) },
+                        label = { Text("보관함·설정") }
+                    )
+                }
             }
         }
     ) { padding ->
@@ -313,71 +336,103 @@ fun PremiumExcelApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .imePadding()
         ) {
-            // 상단 프리미엄 그라데이션 배너
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(Color(0xFF0F2942), Color(0xFF1E4E79), Color(0xFF0284C7))
-                        )
-                    )
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+            // 키보드가 열려있을 때는 상단 배너 대신 얇은 '입력 완료' 바만 표시하여 텍스트 입력창이 가려지지 않게 함
+            if (isKeyboardOpen) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    TemplatePreviewThumbnail(templateId = templateId)
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "EXCEL PHOTO STUDIO",
-                                color = Color(0xFF7DD3FC),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "사진 내용 문구 입력 중",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = { focusManager.clearFocus() },
+                            colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF7DD3FC))
+                        ) {
+                            Icon(Icons.Default.KeyboardHide, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("입력 완료 (키보드 닫기)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            } else {
+                // 상단 프리미엄 그라데이션 배너
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color(0xFF0F2942), Color(0xFF1E4E79), Color(0xFF0284C7))
                             )
-                            Spacer(Modifier.width(6.dp))
-                            Surface(
-                                color = Color(0xFF38BDF8).copy(alpha = 0.25f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TemplatePreviewThumbnail(templateId = templateId)
+                        Spacer(Modifier.width(12.dp))
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { showTitleEditDialog = true }
+                        ) {
+                            Text(
+                                "엑셀 상단 제목 (터치하여 변경)",
+                                color = Color(0xFF7DD3FC),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    "PRO",
+                                    docTitle,
                                     color = Color.White,
-                                    fontSize = 9.sp,
+                                    fontSize = 17.sp,
                                     fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Icon(
+                                    Icons.Default.Edit,
+                                    contentDescription = "제목 수정",
+                                    tint = Color.White.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(15.dp)
                                 )
                             }
+                            Text(
+                                "$currentTemplateLabel · 사진 ${photos.size}장",
+                                color = Color.White.copy(alpha = 0.85f),
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
-                        Text(
-                            docTitle,
-                            color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            "$currentTemplateLabel · 사진 ${photos.size}장 등록됨",
-                            color = Color.White.copy(alpha = 0.85f),
-                            fontSize = 12.sp
-                        )
-                    }
-                    FilledTonalButton(
-                        onClick = { showLivePreviewDialog = true },
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = Color.White.copy(alpha = 0.18f),
-                            contentColor = Color.White
-                        ),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("시트 미리보기", fontSize = 12.sp)
+                        FilledTonalButton(
+                            onClick = { showLivePreviewDialog = true },
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = Color.White.copy(alpha = 0.18f),
+                                contentColor = Color.White
+                            ),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("시트 미리보기", fontSize = 12.sp)
+                        }
                     }
                 }
             }
@@ -388,153 +443,154 @@ fun PremiumExcelApp() {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        // 문서 기본 설정 접기/펼치기 바
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color.White),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { infoExpanded = !infoExpanded },
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Tune,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        "$teamName · $dateText · 기본문구: $captionPrefix",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Icon(
-                                        if (infoExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                        contentDescription = null
-                                    )
-                                }
-
-                                AnimatedVisibility(visible = infoExpanded) {
-                                    Column(
-                                        modifier = Modifier.padding(top = 10.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        // 키보드가 닫혀있을 때만 상단 문서설정/카메라 버튼을 보여주고, 키보드가 열리면 사진 입력창에 전체 화면 할당!
+                        if (!isKeyboardOpen) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color.White),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { infoExpanded = !infoExpanded },
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        OutlinedTextField(
-                                            value = docTitle,
-                                            onValueChange = { docTitle = it },
-                                            label = { Text("문서 제목") },
-                                            singleLine = true,
-                                            modifier = Modifier.fillMaxWidth()
+                                        Icon(
+                                            Icons.Default.Tune,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
                                         )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            OutlinedTextField(
-                                                value = teamName,
-                                                onValueChange = { teamName = it },
-                                                label = { Text("팀명 / 작성자") },
-                                                singleLine = true,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                            OutlinedTextField(
-                                                value = dateText,
-                                                onValueChange = { dateText = it },
-                                                label = { Text("날짜") },
-                                                singleLine = true,
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "$teamName · $dateText · 기본문구: $captionPrefix",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Icon(
+                                            if (infoExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                            contentDescription = null
+                                        )
+                                    }
+
+                                    AnimatedVisibility(visible = infoExpanded) {
+                                        Column(
+                                            modifier = Modifier.padding(top = 10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             OutlinedTextField(
-                                                value = captionPrefix,
-                                                onValueChange = { captionPrefix = it },
-                                                label = { Text("기본 내용 문구") },
+                                                value = docTitle,
+                                                onValueChange = { docTitle = it },
+                                                label = { Text("엑셀 상단 제목 (A1 셀)") },
                                                 singleLine = true,
-                                                modifier = Modifier.weight(1f)
+                                                modifier = Modifier.fillMaxWidth()
                                             )
-                                            FilledTonalButton(onClick = { applyBatchCaptions() }) {
-                                                Text("일괄적용", fontSize = 12.sp)
-                                            }
-                                        }
-                                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            val presets = listOf("현장 사진", "점검 전·후", "장비 입고", "안전보건 교육", "불량/조치")
-                                            items(presets.size) { idx ->
-                                                AssistChip(
-                                                    onClick = {
-                                                        captionPrefix = presets[idx]
-                                                        applyBatchCaptions()
-                                                    },
-                                                    label = { Text(presets[idx], fontSize = 12.sp) }
+                                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                OutlinedTextField(
+                                                    value = teamName,
+                                                    onValueChange = { teamName = it },
+                                                    label = { Text("팀명 / 작성자") },
+                                                    singleLine = true,
+                                                    modifier = Modifier.weight(1f)
                                                 )
+                                                OutlinedTextField(
+                                                    value = dateText,
+                                                    onValueChange = { dateText = it },
+                                                    label = { Text("날짜") },
+                                                    singleLine = true,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                OutlinedTextField(
+                                                    value = captionPrefix,
+                                                    onValueChange = { captionPrefix = it },
+                                                    label = { Text("기본 내용 문구 (뒤에 1-1, 1-2 자동 생성)") },
+                                                    singleLine = true,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                FilledTonalButton(onClick = { applyBatchCaptions() }) {
+                                                    Text("일괄적용", fontSize = 12.sp)
+                                                }
+                                            }
+                                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                val presets = listOf("현장 사진", "점검 전·후", "장비 입고", "안전보건 교육", "불량/조치")
+                                                items(presets.size) { idx ->
+                                                    AssistChip(
+                                                        onClick = {
+                                                            captionPrefix = presets[idx]
+                                                            applyBatchCaptions()
+                                                        },
+                                                        label = { Text(presets[idx], fontSize = 12.sp) }
+                                                    )
+                                                }
                                             }
                                         }
                                     }
                                 }
                             }
-                        }
 
-                        Spacer(Modifier.height(8.dp))
+                            Spacer(Modifier.height(8.dp))
 
-                        // 촬영 / 갤러리 / 보기모드 툴바
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Button(
-                                onClick = {
-                                    val granted = ContextCompat.checkSelfPermission(
-                                        context, Manifest.permission.CAMERA
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    if (granted) launchCamera()
-                                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                },
-                                modifier = Modifier.weight(1f)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(Icons.Default.PhotoCamera, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("카메라 촬영")
-                            }
+                                Button(
+                                    onClick = {
+                                        val granted = ContextCompat.checkSelfPermission(
+                                            context, Manifest.permission.CAMERA
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (granted) launchCamera()
+                                        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.PhotoCamera, contentDescription = null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("카메라 촬영")
+                                }
 
-                            OutlinedButton(
-                                onClick = {
-                                    galleryPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                OutlinedButton(
+                                    onClick = {
+                                        galleryPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Collections, contentDescription = null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("갤러리 다중선택")
+                                }
+
+                                IconButton(
+                                    onClick = { isGridView = !isGridView },
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White)
+                                ) {
+                                    Icon(
+                                        if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
+                                        contentDescription = "보기 전환",
+                                        tint = MaterialTheme.colorScheme.primary
                                     )
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(Icons.Default.Collections, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("갤러리 다중선택")
+                                }
                             }
 
-                            IconButton(
-                                onClick = { isGridView = !isGridView },
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color.White)
-                            ) {
-                                Icon(
-                                    if (isGridView) Icons.Default.ViewList else Icons.Default.GridView,
-                                    contentDescription = "보기 전환",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
+                            Spacer(Modifier.height(8.dp))
                         }
-
-                        Spacer(Modifier.height(8.dp))
 
                         // 사진 목록 (리스트 or 격자)
                         if (photos.isEmpty()) {
@@ -571,7 +627,7 @@ fun PremiumExcelApp() {
                                     )
                                 }
                             }
-                        } else if (isGridView) {
+                        } else if (isGridView && !isKeyboardOpen) {
                             LazyVerticalGrid(
                                 columns = GridCells.Fixed(2),
                                 modifier = Modifier.weight(1f),
@@ -659,6 +715,7 @@ fun PremiumExcelApp() {
                         } else {
                             LazyColumn(
                                 modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(bottom = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 itemsIndexed(photos, key = { _, item -> item.id }) { index, item ->
@@ -675,7 +732,7 @@ fun PremiumExcelApp() {
                                         ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(82.dp)
+                                                    .size(78.dp)
                                                     .clip(RoundedCornerShape(8.dp))
                                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                                     .clickable { markupTargetIndex = index }
@@ -729,6 +786,15 @@ fun PremiumExcelApp() {
                                                         photos[index] = item.copy(caption = newText)
                                                     },
                                                     label = { Text("내용 (사진 ${index + 1})") },
+                                                    trailingIcon = {
+                                                        if (item.caption.isNotEmpty()) {
+                                                            IconButton(onClick = {
+                                                                photos[index] = item.copy(caption = "")
+                                                            }) {
+                                                                Icon(Icons.Default.Clear, contentDescription = "지우기", modifier = Modifier.size(16.dp))
+                                                            }
+                                                        }
+                                                    },
                                                     modifier = Modifier.fillMaxWidth(),
                                                     maxLines = 2
                                                 )
@@ -793,58 +859,101 @@ fun PremiumExcelApp() {
                             }
                         }
 
-                        Spacer(Modifier.height(8.dp))
-
-                        // 하단 실행 바 (폰 저장 / 네이버 메일 / 자동 발송)
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(
-                                    enabled = photos.isNotEmpty() && !isWorking,
-                                    onClick = {
-                                        prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
-                                        isWorking = true
-                                        scope.launch {
-                                            try {
-                                                val result = withContext(Dispatchers.IO) {
-                                                    val file = ExcelGenerator.generate(
-                                                        context = context,
-                                                        title = docTitle,
-                                                        teamName = teamName,
-                                                        dateText = dateText,
-                                                        photos = photos.toList(),
-                                                        outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
-                                                        templateId = templateId,
-                                                        addWatermark = addWatermark,
-                                                        maxDimensionPx = maxDimPx
-                                                    )
-                                                    file to saveExcelToDownloads(file)
-                                                }
-                                                lastGeneratedFile = result.first
-                                                statusMessage = "폰에 저장되었습니다. (경로: ${result.second})"
-                                            } catch (e: Exception) {
-                                                statusMessage = "저장 오류: ${e.message}"
-                                            } finally {
-                                                isWorking = false
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.weight(1f)
+                        // 키보드가 닫혀있을 때만 하단 실행 바 표시
+                        if (!isKeyboardOpen) {
+                            Spacer(Modifier.height(6.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.Download, contentDescription = null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("폰에 저장")
+                                    OutlinedButton(
+                                        enabled = photos.isNotEmpty() && !isWorking,
+                                        onClick = {
+                                            prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
+                                            isWorking = true
+                                            scope.launch {
+                                                try {
+                                                    val result = withContext(Dispatchers.IO) {
+                                                        val file = ExcelGenerator.generate(
+                                                            context = context,
+                                                            title = docTitle,
+                                                            teamName = teamName,
+                                                            dateText = dateText,
+                                                            photos = photos.toList(),
+                                                            outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
+                                                            templateId = templateId,
+                                                            addWatermark = addWatermark,
+                                                            maxDimensionPx = maxDimPx
+                                                        )
+                                                        file to saveExcelToDownloads(file)
+                                                    }
+                                                    lastGeneratedFile = result.first
+                                                    statusMessage = "폰에 저장되었습니다. (경로: ${result.second})"
+                                                } catch (e: Exception) {
+                                                    statusMessage = "저장 오류: ${e.message}"
+                                                } finally {
+                                                    isWorking = false
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.Download, contentDescription = null)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("폰에 저장")
+                                    }
+
+                                    OutlinedButton(
+                                        enabled = photos.isNotEmpty() && !isWorking,
+                                        onClick = {
+                                            prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
+                                            isWorking = true
+                                            scope.launch {
+                                                try {
+                                                    val file = withContext(Dispatchers.IO) {
+                                                        ExcelGenerator.generate(
+                                                            context = context,
+                                                            title = docTitle,
+                                                            teamName = teamName,
+                                                            dateText = dateText,
+                                                            photos = photos.toList(),
+                                                            outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
+                                                            templateId = templateId,
+                                                            addWatermark = addWatermark,
+                                                            maxDimensionPx = maxDimPx
+                                                        )
+                                                    }
+                                                    lastGeneratedFile = file
+                                                    shareExcelToNaverOrChooser(file, preferNaver = true)
+                                                } catch (e: Exception) {
+                                                    statusMessage = "공유 오류: ${e.message}"
+                                                } finally {
+                                                    isWorking = false
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.Mail, contentDescription = null)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("네이버 메일")
+                                    }
                                 }
 
-                                OutlinedButton(
+                                Button(
                                     enabled = photos.isNotEmpty() && !isWorking,
                                     onClick = {
+                                        if (!mailConfig.isConfigured) {
+                                            currentTab = 2
+                                            Toast.makeText(context, "보관함·설정 탭에서 메일 설정을 먼저 등록해 주세요.", Toast.LENGTH_SHORT).show()
+                                            return@Button
+                                        }
                                         prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
                                         isWorking = true
                                         scope.launch {
                                             try {
+                                                val fileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx"
                                                 val file = withContext(Dispatchers.IO) {
                                                     ExcelGenerator.generate(
                                                         context = context,
@@ -852,83 +961,41 @@ fun PremiumExcelApp() {
                                                         teamName = teamName,
                                                         dateText = dateText,
                                                         photos = photos.toList(),
-                                                        outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
+                                                        outputFileName = fileName,
                                                         templateId = templateId,
                                                         addWatermark = addWatermark,
                                                         maxDimensionPx = maxDimPx
                                                     )
                                                 }
                                                 lastGeneratedFile = file
-                                                shareExcelToNaverOrChooser(file, preferNaver = true)
+                                                EmailSender.sendExcelAttachment(
+                                                    config = mailConfig,
+                                                    subject = "[엑셀 사진 첨부] $docTitle ($dateText)",
+                                                    bodyText = "$dateText $docTitle 엑셀 파일(총 ${photos.size}장)을 첨부합니다.",
+                                                    excelFile = file
+                                                )
+                                                statusMessage = "${mailConfig.recipientEmail} 로 메일 발송을 완료했습니다."
                                             } catch (e: Exception) {
-                                                statusMessage = "공유 오류: ${e.message}"
+                                                statusMessage = "발송 실패: ${e.message}"
                                             } finally {
                                                 isWorking = false
                                             }
                                         }
                                     },
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Icon(Icons.Default.Mail, contentDescription = null)
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("네이버 메일")
-                                }
-                            }
-
-                            Button(
-                                enabled = photos.isNotEmpty() && !isWorking,
-                                onClick = {
-                                    if (!mailConfig.isConfigured) {
-                                        currentTab = 2
-                                        Toast.makeText(context, "보관함·설정 탭에서 메일 설정을 먼저 등록해 주세요.", Toast.LENGTH_SHORT).show()
-                                        return@Button
+                                    if (isWorking) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                            color = Color.White
+                                        )
+                                    } else {
+                                        Icon(Icons.Default.Send, contentDescription = null)
                                     }
-                                    prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
-                                    isWorking = true
-                                    scope.launch {
-                                        try {
-                                            val fileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx"
-                                            val file = withContext(Dispatchers.IO) {
-                                                ExcelGenerator.generate(
-                                                    context = context,
-                                                    title = docTitle,
-                                                    teamName = teamName,
-                                                    dateText = dateText,
-                                                    photos = photos.toList(),
-                                                    outputFileName = fileName,
-                                                    templateId = templateId,
-                                                    addWatermark = addWatermark,
-                                                    maxDimensionPx = maxDimPx
-                                                )
-                                            }
-                                            lastGeneratedFile = file
-                                            EmailSender.sendExcelAttachment(
-                                                config = mailConfig,
-                                                subject = "[엑셀 사진 첨부] $docTitle ($dateText)",
-                                                bodyText = "$dateText $docTitle 엑셀 파일(총 ${photos.size}장)을 첨부합니다.",
-                                                excelFile = file
-                                            )
-                                            statusMessage = "${mailConfig.recipientEmail} 로 메일 발송을 완료했습니다."
-                                        } catch (e: Exception) {
-                                            statusMessage = "발송 실패: ${e.message}"
-                                        } finally {
-                                            isWorking = false
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                if (isWorking) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(18.dp),
-                                        strokeWidth = 2.dp,
-                                        color = Color.White
-                                    )
-                                } else {
-                                    Icon(Icons.Default.Send, contentDescription = null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("엑셀 생성 및 메일 자동 발송")
                                 }
-                                Spacer(Modifier.width(6.dp))
-                                Text("엑셀 생성 및 메일 자동 발송")
                             }
                         }
                     }
@@ -1068,7 +1135,6 @@ fun PremiumExcelApp() {
                             .padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // 화질 및 워터마크 옵션 카드
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -1109,7 +1175,6 @@ fun PremiumExcelApp() {
                             }
                         }
 
-                        // SMTP 자동 메일 발송 설정 카드
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -1161,7 +1226,6 @@ fun PremiumExcelApp() {
                             }
                         }
 
-                        // 최근 생성된 엑셀 파일 보관함
                         Card(
                             colors = CardDefaults.cardColors(containerColor = Color.White),
                             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -1204,6 +1268,49 @@ fun PremiumExcelApp() {
                 }
             }
         }
+    }
+
+    // 상단 제목 빠른 수정 모달
+    if (showTitleEditDialog) {
+        var tempTitle by remember(docTitle) { mutableStateOf(docTitle) }
+        AlertDialog(
+            onDismissRequest = { showTitleEditDialog = false },
+            title = { Text("엑셀 문서 제목 변경") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("엑셀 시트 맨 위 제목(A1)과 파일명에 들어갈 제목입니다.", fontSize = 12.sp, color = Color.Gray)
+                    OutlinedTextField(
+                        value = tempTitle,
+                        onValueChange = { tempTitle = it },
+                        label = { Text("문서 제목") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("안전보건 교육 사진", "현장 점검 보고서", "작업 전·후 사진").forEach { sample ->
+                            AssistChip(
+                                onClick = { tempTitle = sample },
+                                label = { Text(sample, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (tempTitle.isNotBlank()) {
+                        docTitle = tempTitle.trim()
+                        prefs.saveDocDefaults(docTitle, teamName, captionPrefix)
+                    }
+                    showTitleEditDialog = false
+                }) {
+                    Text("적용")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTitleEditDialog = false }) { Text("취소") }
+            }
+        )
     }
 
     // 실시간 엑셀 시트 미리보기 모달
@@ -1284,7 +1391,6 @@ fun LiveSheetPreviewDialog(
                     }
                 }
                 Spacer(Modifier.height(6.dp))
-                // 종이 시트 컨테이너
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -1295,7 +1401,6 @@ fun LiveSheetPreviewDialog(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // 시트 헤더
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1443,7 +1548,7 @@ fun PhotoMarkupDialog(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var selectedColor by remember { mutableStateOf(Color(0xFFEF4444)) } // 기본 빨간색
+    var selectedColor by remember { mutableStateOf(Color(0xFFEF4444)) }
     val strokes = remember { mutableStateListOf<NormalizedStroke>() }
     var currentPoints by remember { mutableStateOf<List<Pair<Float, Float>>>(emptyList()) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
@@ -1486,7 +1591,6 @@ fun PhotoMarkupDialog(
                     }
                 }
 
-                // 색상 선택 바
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1516,7 +1620,6 @@ fun PhotoMarkupDialog(
                     }
                 }
 
-                // 캔버스 + 이미지 영역
                 Box(
                     modifier = Modifier
                         .weight(1f)

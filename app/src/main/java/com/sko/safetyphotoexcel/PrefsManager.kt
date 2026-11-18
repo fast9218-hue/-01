@@ -44,14 +44,14 @@ class PrefsManager(context: Context) {
 
     fun saveDocDefaults(title: String, teamName: String, captionPrefix: String) {
         prefs.edit()
-            .putString("doc_title", title)
+            .putString("doc_title_v2", title)
             .putString("team_name", teamName)
             .putString("caption_prefix", captionPrefix)
             .apply()
     }
 
     fun loadDocTitle(): String =
-        prefs.getString("doc_title", "사  진  대  지") ?: "사  진  대  지"
+        prefs.getString("doc_title_v2", "엑셀 사진 보고서") ?: "엑셀 사진 보고서"
 
     fun loadTeamName(): String =
         prefs.getString("team_name", "유니트검증팀") ?: "유니트검증팀"
