@@ -354,8 +354,8 @@ object ExcelGenerator {
         sheet.fitToPage = true
         sheet.isPrintGridlines = false
         sheet.isDisplayGridlines = true
-        sheet.isHorizontallyCenter = true
-        sheet.isVerticallyCenter = true
+        sheet.horizontallyCenter = true
+        sheet.verticallyCenter = true
 
         sheet.setMargin(Sheet.LeftMargin, 0.35)
         sheet.setMargin(Sheet.RightMargin, 0.35)
