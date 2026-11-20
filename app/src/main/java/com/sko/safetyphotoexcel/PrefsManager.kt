@@ -90,4 +90,11 @@ class PrefsManager(context: Context) {
 
     fun loadMaxDimensionPx(): Int =
         prefs.getInt("max_dim_px", 1600)
+
+    fun saveFillCellEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("fill_cell_enabled", enabled).apply()
+    }
+
+    fun loadFillCellEnabled(): Boolean =
+        prefs.getBoolean("fill_cell_enabled", true)
 }

@@ -101,7 +101,8 @@ object ExcelGenerator {
         outputFileName: String,
         templateId: String = "vertical_2",
         addWatermark: Boolean = false,
-        maxDimensionPx: Int = 1600
+        maxDimensionPx: Int = 1600,
+        fillCell: Boolean = true
     ): File {
         require(photos.isNotEmpty()) { "최소 1장 이상의 사진이 필요합니다." }
 
@@ -191,24 +192,38 @@ object ExcelGenerator {
             }
 
             val wm = if (addWatermark) "$dateText · $teamName" else null
+            val boxAspect = if (fillCell) computeBoxAspectRatio(sheet, slot.startRow, slot.endRow, slot.startCol, slot.endCol) else null
             val processed = ImageUtils.loadNormalizedJpeg(
                 context = context,
                 uri = photo.uri,
                 extraRotationDegrees = photo.rotationDegrees,
                 watermarkText = wm,
-                maxDimensionPx = maxDimensionPx
+                maxDimensionPx = maxDimensionPx,
+                cropToAspectRatio = boxAspect
             )
-            insertCenteredPicture(
-                workbook = workbook,
-                sheet = sheet,
-                imageBytes = processed.bytes,
-                imgWidthPx = processed.widthPx,
-                imgHeightPx = processed.heightPx,
-                startRow = slot.startRow,
-                endRow = slot.endRow,
-                startCol = slot.startCol,
-                endCol = slot.endCol
-            )
+            if (fillCell) {
+                insertFullCellPicture(
+                    workbook = workbook,
+                    sheet = sheet,
+                    imageBytes = processed.bytes,
+                    startRow = slot.startRow,
+                    endRow = slot.endRow,
+                    startCol = slot.startCol,
+                    endCol = slot.endCol
+                )
+            } else {
+                insertCenteredPicture(
+                    workbook = workbook,
+                    sheet = sheet,
+                    imageBytes = processed.bytes,
+                    imgWidthPx = processed.widthPx,
+                    imgHeightPx = processed.heightPx,
+                    startRow = slot.startRow,
+                    endRow = slot.endRow,
+                    startCol = slot.startCol,
+                    endCol = slot.endCol
+                )
+            }
         }
 
         // 모든 시트에 1페이지 출력 설정 강제 적용
@@ -543,6 +558,41 @@ object ExcelGenerator {
         RegionUtil.setBorderBottom(style, region, sheet)
         RegionUtil.setBorderLeft(style, region, sheet)
         RegionUtil.setBorderRight(style, region, sheet)
+    }
+
+    private fun computeBoxAspectRatio(
+        sheet: XSSFSheet,
+        startRow: Int,
+        endRow: Int,
+        startCol: Int,
+        endCol: Int
+    ): Double {
+        val colWidthsPx = (startCol..endCol).map { sheet.getColumnWidthInPixels(it).toDouble() }
+        val rowHeightsPt = (startRow..endRow).map {
+            val row = sheet.getRow(it)
+            (row?.heightInPoints ?: sheet.defaultRowHeightInPoints).toDouble()
+        }
+        val wEmu = colWidthsPx.sum() * Units.EMU_PER_PIXEL
+        val hEmu = rowHeightsPt.sum() * Units.EMU_PER_POINT
+        return if (hEmu > 0) wEmu / hEmu else 1.333
+    }
+
+    private fun insertFullCellPicture(
+        workbook: XSSFWorkbook,
+        sheet: XSSFSheet,
+        imageBytes: ByteArray,
+        startRow: Int,
+        endRow: Int,
+        startCol: Int,
+        endCol: Int
+    ) {
+        val pictureIdx = workbook.addPicture(imageBytes, Workbook.PICTURE_TYPE_JPEG)
+        val drawing = sheet.createDrawingPatriarch()
+        // 셀 좌상단(startCol, startRow)부터 우하단(endCol+1, endRow+1)까지 여백 없이 꽉 채움
+        val anchor = XSSFClientAnchor(0, 0, 0, 0, startCol, startRow, endCol + 1, endRow + 1).apply {
+            anchorType = ClientAnchor.AnchorType.MOVE_AND_RESIZE
+        }
+        drawing.createPicture(anchor, pictureIdx)
     }
 
     private fun insertCenteredPicture(

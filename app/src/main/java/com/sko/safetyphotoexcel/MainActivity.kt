@@ -137,6 +137,7 @@ fun PremiumExcelApp() {
     }
     var addWatermark by remember { mutableStateOf(prefs.loadWatermarkEnabled()) }
     var maxDimPx by remember { mutableIntStateOf(prefs.loadMaxDimensionPx()) }
+    var fillCell by remember { mutableStateOf(prefs.loadFillCellEnabled()) }
 
     val photos = remember { mutableStateListOf<PhotoEntry>() }
     var nextId by remember { mutableLongStateOf(1L) }
@@ -884,7 +885,8 @@ fun PremiumExcelApp() {
                                                             outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
                                                             templateId = templateId,
                                                             addWatermark = addWatermark,
-                                                            maxDimensionPx = maxDimPx
+                                                            maxDimensionPx = maxDimPx,
+                                                        fillCell = fillCell
                                                         )
                                                         file to saveExcelToDownloads(file)
                                                     }
@@ -921,7 +923,8 @@ fun PremiumExcelApp() {
                                                             outputFileName = "${docTitle.replace(" ", "")}_${dateText}.xlsx",
                                                             templateId = templateId,
                                                             addWatermark = addWatermark,
-                                                            maxDimensionPx = maxDimPx
+                                                            maxDimensionPx = maxDimPx,
+                                                        fillCell = fillCell
                                                         )
                                                     }
                                                     lastGeneratedFile = file
@@ -964,7 +967,8 @@ fun PremiumExcelApp() {
                                                         outputFileName = fileName,
                                                         templateId = templateId,
                                                         addWatermark = addWatermark,
-                                                        maxDimensionPx = maxDimPx
+                                                        maxDimensionPx = maxDimPx,
+                                                        fillCell = fillCell
                                                     )
                                                 }
                                                 lastGeneratedFile = file
@@ -1152,6 +1156,22 @@ fun PremiumExcelApp() {
                                         onCheckedChange = {
                                             addWatermark = it
                                             prefs.saveWatermarkEnabled(it)
+                                        }
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("셀 여백 없이 꽉 채우기 (권장)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                        Text("끄면 여백이 생기지만 원본 전체가 보입니다", fontSize = 11.sp, color = Color.Gray)
+                                    }
+                                    Switch(
+                                        checked = fillCell,
+                                        onCheckedChange = {
+                                            fillCell = it
+                                            prefs.saveFillCellEnabled(it)
                                         }
                                     )
                                 }

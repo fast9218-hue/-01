@@ -104,7 +104,8 @@ object ImageUtils {
         extraRotationDegrees: Int = 0,
         watermarkText: String? = null,
         maxDimensionPx: Int = 1600,
-        jpegQuality: Int = 88
+        jpegQuality: Int = 88,
+        cropToAspectRatio: Double? = null
     ): ProcessedImage {
         val base = loadUprightBitmap(context, uri, maxDimensionPx)
 
@@ -117,12 +118,20 @@ object ImageUtils {
             base
         }
 
-        val watermarked = if (!watermarkText.isNullOrBlank()) {
-            drawWatermark(userRotated, watermarkText).also {
+        val cropped = if (cropToAspectRatio != null && cropToAspectRatio > 0.0) {
+            centerCropToAspect(userRotated, cropToAspectRatio).also {
                 if (it !== userRotated) userRotated.recycle()
             }
         } else {
             userRotated
+        }
+
+        val watermarked = if (!watermarkText.isNullOrBlank()) {
+            drawWatermark(cropped, watermarkText).also {
+                if (it !== cropped) cropped.recycle()
+            }
+        } else {
+            cropped
         }
         val finalBmp = drawPhotoBorder(watermarked).also {
             if (it !== watermarked) watermarked.recycle()
@@ -135,6 +144,22 @@ object ImageUtils {
         finalBmp.recycle()
 
         return ProcessedImage(out.toByteArray(), w, h)
+    }
+
+    private fun centerCropToAspect(src: Bitmap, targetAspect: Double): Bitmap {
+        val w = src.width
+        val h = src.height
+        val currentAspect = w.toDouble() / h.toDouble()
+        if (kotlin.math.abs(currentAspect - targetAspect) < 0.02) return src
+        return if (currentAspect > targetAspect) {
+            val newW = (h * targetAspect).roundToInt().coerceIn(1, w)
+            val x = ((w - newW) / 2).coerceAtLeast(0)
+            Bitmap.createBitmap(src, x, 0, newW, h)
+        } else {
+            val newH = (w / targetAspect).roundToInt().coerceIn(1, h)
+            val y = ((h - newH) / 2).coerceAtLeast(0)
+            Bitmap.createBitmap(src, 0, y, w, newH)
+        }
     }
 
     private fun drawPhotoBorder(src: Bitmap): Bitmap {
