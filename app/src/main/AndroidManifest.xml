@@ -9,7 +9,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="엑셀 사진 자동화"
+        android:label="엑셀사진Pro"
         android:supportsRtl="true"
         android:theme="@style/Theme.SafetyPhotoExcel">
 
